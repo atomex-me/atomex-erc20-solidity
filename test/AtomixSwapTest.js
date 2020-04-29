@@ -75,7 +75,6 @@ contract('AtomicSwap', async (accounts) => {
 
         let swap = await contractSwap.swaps(hashed_secret);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
-        assert.equal(swap.secret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
@@ -93,7 +92,6 @@ contract('AtomicSwap', async (accounts) => {
         swap = await contractSwap.swaps(hashed_secret);
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
         assert.equal(swap.hashedSecret, hashed_secret);
-        assert.equal(swap.secret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, contractUSDC.address);
         assert.equal(swap.participant, participant);
         assert.equal(swap.initiator, sender);
@@ -129,7 +127,6 @@ contract('AtomicSwap', async (accounts) => {
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
 
         assert.equal(swap.hashedSecret, hashed_secret);
-        assert.equal(swap.secret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, contractUSDC.address);
         assert.equal(swap.participant, participant);
         assert.equal(swap.initiator, sender);
@@ -183,7 +180,7 @@ contract('AtomicSwap', async (accounts) => {
             await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('invalid refundTimestamp') >= 0);
+            assert(error.message.indexOf('refundTimestamp has already come') >= 0);
         }
 
         refundTimestamp = 115792089237316195423570985008687907853269984665640564039457584007913129639936;
@@ -243,7 +240,7 @@ contract('AtomicSwap', async (accounts) => {
             await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('invalid countdown') >= 0);
+            assert(error.message.indexOf('countdown exceeds the refundTimestamp') >= 0);
         }
 
         countdown = -1;
@@ -252,7 +249,7 @@ contract('AtomicSwap', async (accounts) => {
             await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('invalid countdown') >= 0);
+            assert(error.message.indexOf('countdown exceeds the refundTimestamp') >= 0);
         }
     });
 
@@ -321,7 +318,6 @@ contract('AtomicSwap', async (accounts) => {
 
         swap = await contractSwap.swaps(hashed_secret);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
-        assert.equal(swap.secret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
@@ -543,7 +539,7 @@ contract('AtomicSwap', async (accounts) => {
             await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('refundTimestamp has already passed') >= 0);
+            assert(error.message.indexOf('refundTimestamp has already come') >= 0);
         }
     });
 
@@ -638,7 +634,6 @@ contract('AtomicSwap', async (accounts) => {
 
         swap = await contractSwap.swaps(hashed_secret);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
-        assert.equal(swap.secret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
@@ -796,7 +791,7 @@ contract('AtomicSwap', async (accounts) => {
             await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('refundTimestamp has not passed') >= 0);
+            assert(error.message.indexOf('refundTimestamp has not come') >= 0);
         }
     });
 

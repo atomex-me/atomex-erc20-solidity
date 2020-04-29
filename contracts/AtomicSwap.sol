@@ -96,21 +96,20 @@ contract ReentrancyGuard {
 }
 
 contract AtomicSwap is ReentrancyGuard {
-    using SafeMath for uint;
+    using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
     enum State { Empty, Initiated, Redeemed, Refunded }
 
     struct Swap {
         bytes32 hashedSecret;
-        bytes32 secret;
         address contractAddr;
         address participant;
         address payable initiator;
-        uint refundTimestamp;
-        uint countdown;
-        uint value;
-        uint payoff;
+        uint256 refundTimestamp;
+        uint256 countdown;
+        uint256 value;
+        uint256 payoff;
         bool active;
         State state;
     }
@@ -120,24 +119,28 @@ contract AtomicSwap is ReentrancyGuard {
         address indexed _contract,
         address indexed _participant,
         address _initiator,
-        uint _refundTimestamp,
-        uint _countdown,
-        uint _value,
-        uint _payoff,
+        uint256 _refundTimestamp,
+        uint256 _countdown,
+        uint256 _value,
+        uint256 _payoff,
         bool _active
     );
+
     event Added(
         bytes32 indexed _hashedSecret,
         address _sender,
-        uint _value
+        uint256 _value  
     );
+
     event Activated(
         bytes32 indexed _hashedSecret
     );
+
     event Redeemed(
         bytes32 indexed _hashedSecret,
         bytes32 _secret
     );
+
     event Refunded(
         bytes32 indexed _hashedSecret
     );
@@ -149,11 +152,11 @@ contract AtomicSwap is ReentrancyGuard {
         _;
     }
 
-    modifier isInitiatable(bytes32 _hashedSecret, address _participant, uint _refundTimestamp, uint _countdown) {
+    modifier isInitiatable(bytes32 _hashedSecret, address _participant, uint256 _refundTimestamp, uint256 _countdown) {
         require(_participant != address(0), "invalid participant address");
         require(swaps[_hashedSecret].state == State.Empty, "swap for this hash is already initiated");
-        require(block.timestamp <= _refundTimestamp, "invalid refundTimestamp");
-        require(_countdown < _refundTimestamp, "invalid countdown");
+        require(block.timestamp < _refundTimestamp, "refundTimestamp has already come");
+        require(_countdown < _refundTimestamp, "countdown exceeds the refundTimestamp");
         _;
     }
 
@@ -163,7 +166,7 @@ contract AtomicSwap is ReentrancyGuard {
     }
 
     modifier isAddable(bytes32 _hashedSecret) {
-        require(block.timestamp <= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
+        require(block.timestamp < swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
         _;
     }
 
@@ -178,19 +181,19 @@ contract AtomicSwap is ReentrancyGuard {
     }
 
     modifier isRedeemable(bytes32 _hashedSecret, bytes32 _secret) {
-        require(block.timestamp <= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already passed");
+        require(block.timestamp <= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
         require(sha256(abi.encodePacked(sha256(abi.encodePacked(_secret)))) == _hashedSecret, "secret is not correct");
         _;
     }
 
     modifier isRefundable(bytes32 _hashedSecret) {
-        require(block.timestamp > swaps[_hashedSecret].refundTimestamp, "refundTimestamp has not passed");
+        require(block.timestamp > swaps[_hashedSecret].refundTimestamp, "refundTimestamp has not come");
         _;
     }
 
-    function initiate(
-        bytes32 _hashedSecret, address _contract, address _participant, uint _refundTimestamp,
-        uint _countdown, uint _value, uint _payoff, bool _active)
+    function initiate (
+        bytes32 _hashedSecret, address _contract, address _participant, uint256 _refundTimestamp, 
+        uint256 _countdown, uint256 _value, uint256 _payoff, bool _active)
         public nonReentrant isInitiatable(_hashedSecret, _participant, _refundTimestamp, _countdown)
     {
         IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
@@ -247,7 +250,6 @@ contract AtomicSwap is ReentrancyGuard {
     function redeem(bytes32 _hashedSecret, bytes32 _secret)
         public nonReentrant isInitiated(_hashedSecret) isActivated(_hashedSecret) isRedeemable(_hashedSecret, _secret)
     {
-        swaps[_hashedSecret].secret = _secret;
         swaps[_hashedSecret].state = State.Redeemed;
 
         if (block.timestamp > swaps[_hashedSecret].refundTimestamp.sub(swaps[_hashedSecret].countdown)) {

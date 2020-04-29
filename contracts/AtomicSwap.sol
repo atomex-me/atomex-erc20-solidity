@@ -1,6 +1,6 @@
 pragma solidity ^0.5.0;
 
-// From file: openzeppelin-contracts/contracts/math/SafeMath.sol 
+// From file: openzeppelin-contracts/contracts/math/SafeMath.sol
 library SafeMath {
     function add(uint256 a, uint256 b) internal pure returns (uint256) {
         uint256 c = a + b;
@@ -14,16 +14,17 @@ library SafeMath {
     }
 }
 
-// From file: openzeppelin-contracts/contracts/utils/Address.sol 
+// From file: openzeppelin-contracts/contracts/utils/Address.sol
 library Address {
     function isContract(address account) internal view returns (bool) {
         uint256 size;
+        // solium-disable-next-line
         assembly { size := extcodesize(account) }
         return size > 0;
     }
 }
 
-// File: openzeppelin-contracts/contracts/token/ERC20/SafeERC20.sol 
+// File: openzeppelin-contracts/contracts/token/ERC20/SafeERC20.sol
 library SafeERC20 {
     using SafeMath for uint256;
     using Address for address;
@@ -37,7 +38,8 @@ library SafeERC20 {
     }
 
     function safeApprove(IERC20 token, address spender, uint256 value) internal {
-        require((value == 0) || (token.allowance(address(this), spender) == 0),
+        require(
+            (value == 0) || (token.allowance(address(this), spender) == 0),
             "SafeERC20: approve from non-zero to non-zero allowance"
         );
         callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
@@ -77,7 +79,7 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
-// File: openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol 
+// File: openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol
 contract ReentrancyGuard {
     bool private _notEntered;
 
@@ -112,7 +114,7 @@ contract AtomicSwap is ReentrancyGuard {
         bool active;
         State state;
     }
-    
+
     event Initiated(
         bytes32 indexed _hashedSecret,
         address indexed _contract,
@@ -127,7 +129,7 @@ contract AtomicSwap is ReentrancyGuard {
     event Added(
         bytes32 indexed _hashedSecret,
         address _sender,
-        uint _value  
+        uint _value
     );
     event Activated(
         bytes32 indexed _hashedSecret
@@ -154,7 +156,7 @@ contract AtomicSwap is ReentrancyGuard {
         require(_countdown < _refundTimestamp, "invalid countdown");
         _;
     }
-    
+
     modifier isInitiated(bytes32 _hashedSecret) {
         require(swaps[_hashedSecret].state == State.Initiated, "swap for this hash is empty or already spent");
         _;
@@ -164,12 +166,12 @@ contract AtomicSwap is ReentrancyGuard {
         require(block.timestamp <= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
         _;
     }
-        
+
     modifier isActivated(bytes32 _hashedSecret) {
         require(swaps[_hashedSecret].active, "swap is not active");
         _;
-    }    
-    
+    }
+
     modifier isNotActivated(bytes32 _hashedSecret) {
         require(!swaps[_hashedSecret].active, "swap is already active");
         _;
@@ -186,7 +188,9 @@ contract AtomicSwap is ReentrancyGuard {
         _;
     }
 
-    function initiate (bytes32 _hashedSecret, address _contract, address _participant, uint _refundTimestamp, uint _countdown, uint _value, uint _payoff, bool _active)
+    function initiate(
+        bytes32 _hashedSecret, address _contract, address _participant, uint _refundTimestamp,
+        uint _countdown, uint _value, uint _payoff, bool _active)
         public nonReentrant isInitiatable(_hashedSecret, _participant, _refundTimestamp, _countdown)
     {
         IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
@@ -214,12 +218,13 @@ contract AtomicSwap is ReentrancyGuard {
             _active
         );
     }
-    
+
     function add (bytes32 _hashedSecret, uint _value)
-        public nonReentrant isInitiated(_hashedSecret) isAddable(_hashedSecret)    
+        public nonReentrant isInitiated(_hashedSecret) isAddable(_hashedSecret)
     {
-        IERC20(swaps[_hashedSecret].contractAddr).safeTransferFrom(msg.sender, address(this), _value);
-        
+        IERC20(swaps[_hashedSecret].contractAddr)
+            .safeTransferFrom(msg.sender, address(this), _value);
+
         swaps[_hashedSecret].value = swaps[_hashedSecret].value.add(_value);
 
         emit Added(
@@ -228,7 +233,7 @@ contract AtomicSwap is ReentrancyGuard {
             swaps[_hashedSecret].value
         );
     }
-    
+
     function activate (bytes32 _hashedSecret)
         public nonReentrant isInitiated(_hashedSecret) isNotActivated(_hashedSecret) onlyByInitiator(_hashedSecret)
     {
@@ -239,43 +244,47 @@ contract AtomicSwap is ReentrancyGuard {
         );
     }
 
-    function redeem(bytes32 _hashedSecret, bytes32 _secret) 
-        public nonReentrant isInitiated(_hashedSecret) isActivated(_hashedSecret) isRedeemable(_hashedSecret, _secret) 
+    function redeem(bytes32 _hashedSecret, bytes32 _secret)
+        public nonReentrant isInitiated(_hashedSecret) isActivated(_hashedSecret) isRedeemable(_hashedSecret, _secret)
     {
         swaps[_hashedSecret].secret = _secret;
         swaps[_hashedSecret].state = State.Redeemed;
 
         if (block.timestamp > swaps[_hashedSecret].refundTimestamp.sub(swaps[_hashedSecret].countdown)) {
-            
-            IERC20(swaps[_hashedSecret].contractAddr).safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value);
-            
+
+            IERC20(swaps[_hashedSecret].contractAddr)
+                .safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value);
+
             if(swaps[_hashedSecret].payoff > 0) {
-                IERC20(swaps[_hashedSecret].contractAddr).safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
+                IERC20(swaps[_hashedSecret].contractAddr)
+                    .safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
             }
         }
         else {
-            IERC20(swaps[_hashedSecret].contractAddr).safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
+            IERC20(swaps[_hashedSecret].contractAddr)
+                .safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
         }
-        
+
         emit Redeemed(
             _hashedSecret,
             _secret
         );
-        
+
         delete swaps[_hashedSecret];
     }
 
     function refund(bytes32 _hashedSecret)
-        public nonReentrant isInitiated(_hashedSecret) isRefundable(_hashedSecret) 
+        public nonReentrant isInitiated(_hashedSecret) isRefundable(_hashedSecret)
     {
         swaps[_hashedSecret].state = State.Refunded;
 
-        IERC20(swaps[_hashedSecret].contractAddr).safeTransfer(swaps[_hashedSecret].initiator, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
+        IERC20(swaps[_hashedSecret].contractAddr)
+            .safeTransfer(swaps[_hashedSecret].initiator, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
 
         emit Refunded(
             _hashedSecret
         );
-        
+
         delete swaps[_hashedSecret];
     }
 }

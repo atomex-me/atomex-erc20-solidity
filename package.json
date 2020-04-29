@@ -1,0 +1,37 @@
+{
+  "name": "atomex-erc20-solidity-evm",
+  "version": "1.0.0",
+  "description": "Atomex protocol implementation for ERC20 in Solidity language (EVM)",
+  "main": "truffle.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "solium": "./node_modules/.bin/solium --no-soliumignore -d contracts",
+    "truffle": "./node_modules/.bin/truffle test",
+    "lint": "npm run solium",
+    "test": "npm run truffle"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/atomex-me/atomex-erc20-solidity.git"
+  },
+  "keywords": [
+    "smart-contracts",
+    "dex",
+    "ethereum",
+    "solidity",
+    "atomic-swap",
+    "erc20"
+  ],
+  "author": "A1exCoon",
+  "license": "GPL-3.0",
+  "bugs": {
+    "url": "https://github.com/atomex-me/atomex-erc20-solidity/issues"
+  },
+  "homepage": "https://github.com/atomex-me/atomex-erc20-solidity#readme",
+  "dependencies": {
+    "solium": "^1.2.5",
+    "truffle": "^5.1.0"
+  }
+}

@@ -2,59 +2,79 @@ pragma solidity ^0.5.0;
 
 library SafeMath {
 
-    function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
-        if (a == 0) {
-            return 0;
-        }
-        c = a * b;
-        assert(c / a == b);
-        return c;
+  function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    if (a == 0) {
+      return 0;
     }
+    c = a * b;
+    assert(c / a == b);
+    return c;
+  }
 
-    function div(uint256 a, uint256 b) internal pure returns (uint256) {
-        return a / b;
-    }
+  function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    return a / b;
+  }
 
-    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
-        assert(b <= a);
-        return a - b;
-    }
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    assert(b <= a);
+    return a - b;
+  }
 
-    function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
-        c = a + b;
-        assert(c >= a);
-        return c;
-    }
+  function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    c = a + b;
+    assert(c >= a);
+    return c;
+  }
 }
 
 contract Ownable {
 
-    address private _owner;
+  address private _owner;
+  address private _successor;
 
-    event OwnershipTransferred(address previousOwner, address newOwner);
+  event OwnershipTransferred(address previousOwner, address newOwner);
+  event NewOwnerProposed(address previousOwner, address newOwner);
 
-    constructor() public {
-        setOwner(msg.sender);
-    }
+  constructor() public {
+    setOwner(msg.sender);
+  }
 
-    function owner() public view returns (address) {
-        return _owner;
-    }
+  function owner() public view returns (address) {
+    return _owner;
+  }
 
-    function setOwner(address newOwner) internal {
-        _owner = newOwner;
-    }
+  function successor() public view returns (address) {
+    return _successor;
+  }
 
-    modifier onlyOwner() {
-        require(msg.sender == owner());
-        _;
-    }
+  function setOwner(address newOwner) internal {
+    _owner = newOwner;
+  }
 
-    function transferOwnership(address newOwner) public onlyOwner {
-        require(newOwner != address(0));
-        emit OwnershipTransferred(owner(), newOwner);
-        setOwner(newOwner);
-    }
+  function setSuccessor(address newOwner) internal {
+    _successor = newOwner;
+  }
+
+  modifier onlyOwner() {
+    require(msg.sender == owner());
+    _;
+  }
+
+  modifier onlySuccessor() {
+    require(msg.sender == successor());
+    _;
+  }
+
+  function proposeOwner(address newOwner) public onlyOwner {
+    require(newOwner != address(0));
+    emit NewOwnerProposed(owner(), newOwner);
+    setSuccessor(newOwner);
+  }
+
+  function acceptOwnership() public onlySuccessor {
+    emit OwnershipTransferred(owner(), successor());
+    setOwner(successor());
+  }
 }
 
 contract ERC20Basic {
@@ -65,16 +85,17 @@ contract ERC20Basic {
 }
 
 contract ERC20 is ERC20Basic {
-    function allowance(address owner, address spender) public view returns (uint256);
-
-    function transferFrom(address from, address to, uint256 value) public returns (bool);
-
+    function allowance(address owner, address spender)
+    public view returns (uint256);
+    
+    function transferFrom(address from, address to, uint256 value)
+    public returns (bool);
+    
     function approve(address spender, uint256 value) public returns (bool);
-
     event Approval(
-        address indexed owner,
-        address indexed spender,
-        uint256 value
+    address indexed owner,
+    address indexed spender,
+    uint256 value
     );
 }
 
@@ -126,7 +147,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         _;
     }
 
-    function mint(address _to, uint256 _amount) public onlyMinters returns (bool) {
+    function mint(address _to, uint256 _amount) onlyMinters public returns (bool) {
         require(_to != address(0));
         require(_amount > 0);
 
@@ -194,21 +215,21 @@ contract FiatTokenV1 is Ownable, ERC20 {
         return true;
     }
 
-    function configureMinter(address minter, uint256 minterAllowedAmount) public onlyMasterMinter returns (bool) {
+    function configureMinter(address minter, uint256 minterAllowedAmount) onlyMasterMinter public returns (bool) {
         minters[minter] = true;
         minterAllowed[minter] = minterAllowedAmount;
         emit MinterConfigured(minter, minterAllowedAmount);
         return true;
     }
 
-    function removeMinter(address minter) public onlyMasterMinter returns (bool) {
+    function removeMinter(address minter) onlyMasterMinter public returns (bool) {
         minters[minter] = false;
         minterAllowed[minter] = 0;
         emit MinterRemoved(minter);
         return true;
     }
 
-    function burn(uint256 _amount) public onlyMinters {
+    function burn(uint256 _amount) onlyMinters public {
         uint256 balance = balances[msg.sender];
         require(_amount > 0);
         require(balance >= _amount);
@@ -219,7 +240,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         emit Transfer(msg.sender, address(0), _amount);
     }
 
-    function updateMasterMinter(address _newMasterMinter) public onlyOwner {
+    function updateMasterMinter(address _newMasterMinter) onlyOwner public {
         require(_newMasterMinter != address(0));
         masterMinter = _newMasterMinter;
         emit MasterMinterChanged(masterMinter);

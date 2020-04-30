@@ -9,11 +9,11 @@ cache:
 install:
   - npm install
 
+before_script:
+  - touch .env
+
 script:
   - make test
-
-before_deploy:
-  - touch .env
 
 deploy:
   provider: script

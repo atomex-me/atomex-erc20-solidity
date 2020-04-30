@@ -2,6 +2,7 @@ include .env
 export $(shell sed 's/=.*//' .env)
 
 .ONESHELL:
+.PHONY: test
 
 test:
 	npm run solium && npm run truffle

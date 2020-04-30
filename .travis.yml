@@ -25,4 +25,4 @@ deploy:
 
 after_deploy:
   - make github-deployment
-  - make verify-ropsten
+  - npm run verify_ropsten

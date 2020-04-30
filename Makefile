@@ -10,9 +10,6 @@ test:
 deploy-ropsten:
 	npm run deploy_ropsten 2>&1| tee deploy.output
 
-verify-ropsten:
-	npm run verify_ropsten
-
 github-deployment:
 	CONTRACT_ADDRESS=$$(cat deploy.output | grep "contract address" | awk '{ print $$4 }' | tail -2 | head -1)
 	ETHERSCAN_URL=https://ropsten.etherscan.io/address/$$CONTRACT_ADDRESS
@@ -27,3 +24,8 @@ github-deployment:
 		-H "Accept: application/vnd.github.ant-man-preview+json" \
 		-H "Authorization: token $$GH_TOKEN" \
 		-d "{ \"state\": \"success\", \"environment\": \"ropsten\", \"environment_url\": \"$$ETHERSCAN_URL\" }"
+
+ropsten:
+	$(MAKE) deploy-ropsten
+	$(MAKE) github-deployment
+	npm run verify_ropsten

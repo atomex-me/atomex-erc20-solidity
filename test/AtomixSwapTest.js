@@ -1,4 +1,4 @@
-const AtomicSwap = artifacts.require('../contracts/AtomicSwap.sol');
+const Atomex = artifacts.require('../contracts/Atomex.sol');
 const FiatTokenV1 = artifacts.require('../contracts/FiatTokenV1.sol');
 
 const sleep = async function (time) {
@@ -28,14 +28,14 @@ function getCurrentTime() {
     })
 }
 
-contract('AtomicSwap', async (accounts) => {
+contract('Atomex', async (accounts) => {
     let contractSwap;
     let contractUSDC;
     let owner = accounts[0];
     let supply = 100000;
 
     beforeEach(async function(){
-        contractSwap = await AtomicSwap.new();
+        contractSwap = await Atomex.new();
         contractUSDC = await FiatTokenV1.new();
 
         let name = 'usdc';

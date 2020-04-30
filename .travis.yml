@@ -10,8 +10,7 @@ install:
   - npm install
 
 script:
-  - npm run solium
-  - npm run test
+  - make test
 
 before_deploy:
   - touch .env
@@ -23,3 +22,7 @@ deploy:
   on:
     branch: master
     tags: true
+
+after_deploy:
+  - make github-deployment
+  - make verify-ropsten

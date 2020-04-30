@@ -95,7 +95,7 @@ contract ReentrancyGuard {
     }
 }
 
-contract AtomicSwap is ReentrancyGuard {
+contract Atomex is ReentrancyGuard {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 

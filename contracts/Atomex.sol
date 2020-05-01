@@ -181,13 +181,13 @@ contract Atomex is ReentrancyGuard {
     }
 
     modifier isRedeemable(bytes32 _hashedSecret, bytes32 _secret) {
-        require(block.timestamp <= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
+        require(block.timestamp < swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
         require(sha256(abi.encodePacked(sha256(abi.encodePacked(_secret)))) == _hashedSecret, "secret is not correct");
         _;
     }
 
     modifier isRefundable(bytes32 _hashedSecret) {
-        require(block.timestamp > swaps[_hashedSecret].refundTimestamp, "refundTimestamp has not come");
+        require(block.timestamp >= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has not come");
         _;
     }
 

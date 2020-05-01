@@ -85,17 +85,13 @@ contract ERC20Basic {
 }
 
 contract ERC20 is ERC20Basic {
-    function allowance(address owner, address spender)
-    public view returns (uint256);
-    
-    function transferFrom(address from, address to, uint256 value)
-    public returns (bool);
-    
+    function allowance(address owner, address spender) public view returns (uint256);
+    function transferFrom(address from, address to, uint256 value) public returns (bool);
     function approve(address spender, uint256 value) public returns (bool);
-    event Approval(
-    address indexed owner,
-    address indexed spender,
-    uint256 value
+	event Approval(
+	    address indexed owner,
+	    address indexed spender,
+	    uint256 value
     );
 }
 
@@ -147,7 +143,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         _;
     }
 
-    function mint(address _to, uint256 _amount) onlyMinters public returns (bool) {
+    function mint(address _to, uint256 _amount) public onlyMinters returns (bool) {
         require(_to != address(0));
         require(_amount > 0);
 
@@ -229,7 +225,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         return true;
     }
 
-    function burn(uint256 _amount) onlyMinters public {
+    function burn(uint256 _amount) public onlyMinters {
         uint256 balance = balances[msg.sender];
         require(_amount > 0);
         require(balance >= _amount);
@@ -240,7 +236,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         emit Transfer(msg.sender, address(0), _amount);
     }
 
-    function updateMasterMinter(address _newMasterMinter) onlyOwner public {
+    function updateMasterMinter(address _newMasterMinter) public onlyOwner {
         require(_newMasterMinter != address(0));
         masterMinter = _newMasterMinter;
         emit MasterMinterChanged(masterMinter);

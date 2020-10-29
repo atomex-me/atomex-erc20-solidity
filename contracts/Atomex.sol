@@ -95,7 +95,132 @@ contract ReentrancyGuard {
     }
 }
 
-contract Atomex is ReentrancyGuard {
+contract Ownable {
+    address private _owner;
+    address private _successor;
+    
+    event OwnershipTransferred(address previousOwner, address newOwner);
+    event NewOwnerProposed(address previousOwner, address newOwner);
+    
+    constructor() public {
+        setOwner(msg.sender);
+    }
+    
+    function owner() public view returns (address) {
+        return _owner;
+    }
+    
+    function successor() public view returns (address) {
+        return _successor;
+    }
+    
+    function setOwner(address newOwner) internal {
+        _owner = newOwner;
+    }
+    
+    function setSuccessor(address newOwner) internal {
+        _successor = newOwner;
+    }
+    
+    modifier onlyOwner() {
+        require(msg.sender == owner(), "sender is not the owner");
+        _;
+    }
+    
+    modifier onlySuccessor() {
+        require(msg.sender == successor(), "sender is not the proposed owner");
+        _;
+    }
+    
+    function proposeOwner(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "invalid owner address");
+        emit NewOwnerProposed(owner(), newOwner);
+        setSuccessor(newOwner);
+    }
+    
+    function acceptOwnership() public onlySuccessor {
+        emit OwnershipTransferred(owner(), successor());
+        setOwner(successor());
+    }
+}
+
+contract WatchTower is Ownable, ReentrancyGuard {
+    using SafeMath for uint256;
+    using SafeERC20 for IERC20;
+    
+    struct Watcher {
+        uint256 deposit;
+        bool registered;
+        uint256 withdrawalTimeout;
+        uint256 withdrawalTimestamp;
+    }
+
+    event NewWatcherProposed(address _contract, address _newWatcher, uint256 _deposit, uint256 _withdrawalTimeout);
+    event NewWatcherRegistered(address _contract, address _newWatcher);
+    event WatcherDeactivated(address _contract, address _watcher);
+    event WatcherWithdrawn(address _contract, address _watcher);
+    event WatcherRemoved(address _contract, address _watcher);
+    
+    mapping(address => mapping(address => Watcher)) public watchTowersERC20;
+    
+    function proposeWatcher (address _contract, address _newWatcher, uint256 _value, uint256 _withdrawalTimeout) public payable {
+        require(_newWatcher != address(0), "invalid watcher address");
+        require(watchTowersERC20[_contract][_newWatcher].deposit == 0, "watcher is already registered");
+        require(_value > 0, "trasaction value must be greater then zero");
+        
+        IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
+        
+        emit NewWatcherProposed(_contract, _newWatcher, _value, _withdrawalTimeout);
+        
+        watchTowersERC20[_contract][_newWatcher].deposit = _value;
+        watchTowersERC20[_contract][_newWatcher].withdrawalTimeout = _withdrawalTimeout;
+    }
+    
+    function acceptWatcher (address _contract, address _newWatcher) public onlyOwner {
+        require(watchTowersERC20[_contract][_newWatcher].deposit > 0, "watcher does not exist");
+        
+        emit NewWatcherRegistered(_contract, _newWatcher);
+        
+        watchTowersERC20[_contract][_newWatcher].registered = true;
+    }
+    
+    function deactivateWatcher (address _contract, address _watcher) public {
+        require(msg.sender == _watcher || msg.sender == owner(), "sender is not authorised");
+        require(watchTowersERC20[_contract][_watcher].deposit > 0, "watcher does not exist");
+        
+        emit WatcherRemoved(_contract, _watcher);
+        
+        watchTowersERC20[_contract][_watcher].registered = false;
+        watchTowersERC20[_contract][_watcher].withdrawalTimestamp = block.timestamp.add(watchTowersERC20[_contract][msg.sender].withdrawalTimeout);
+    }  
+    
+    function withdrawWatcher (address _contract) public nonReentrant {
+        require(watchTowersERC20[_contract][msg.sender].deposit > 0, "watcher does not exist");
+        require(watchTowersERC20[_contract][msg.sender].registered == false, "watcher is not deactivated");
+        require(block.timestamp > watchTowersERC20[_contract][msg.sender].withdrawalTimestamp, "withdrawalTimestamp has not come");
+        
+        emit WatcherWithdrawn(_contract, msg.sender);
+        
+        msg.sender.transfer(watchTowersERC20[_contract][msg.sender].deposit);
+        
+        IERC20(_contract).safeTransfer(msg.sender, watchTowersERC20[_contract][msg.sender].deposit);
+        
+        delete watchTowersERC20[_contract][msg.sender];
+    }
+    
+    function removeWatcher (address _contract, address _watcher) internal {
+        require(watchTowersERC20[_contract][_watcher].deposit > 0, "watcher does not exist");
+        require(watchTowersERC20[_contract][_watcher].registered == true, "watcher is not registered");
+
+        emit WatcherRemoved(_contract, _watcher);
+        
+        IERC20(_contract).safeTransfer(msg.sender, watchTowersERC20[_contract][_watcher].deposit);
+        
+        delete watchTowersERC20[_contract][_watcher];
+    }
+}
+
+contract Atomex is WatchTower {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
@@ -105,12 +230,12 @@ contract Atomex is ReentrancyGuard {
         bytes32 hashedSecret;
         address contractAddr;
         address participant;
-        address payable initiator;
+        address initiator;
+        address watcher;
         uint256 refundTimestamp;
-        uint256 countdown;
+        uint256 watcherDeadline;
         uint256 value;
         uint256 payoff;
-        bool active;
         State state;
     }
 
@@ -119,21 +244,17 @@ contract Atomex is ReentrancyGuard {
         address indexed _contract,
         address indexed _participant,
         address _initiator,
+        address _watcher,
         uint256 _refundTimestamp,
-        uint256 _countdown,
+        uint256 _watcherDeadline,
         uint256 _value,
-        uint256 _payoff,
-        bool _active
+        uint256 _payoff
     );
 
     event Added(
         bytes32 indexed _hashedSecret,
         address _sender,
         uint256 _value  
-    );
-
-    event Activated(
-        bytes32 indexed _hashedSecret
     );
 
     event Redeemed(
@@ -152,11 +273,11 @@ contract Atomex is ReentrancyGuard {
         _;
     }
 
-    modifier isInitiatable(bytes32 _hashedSecret, address _participant, uint256 _refundTimestamp, uint256 _countdown) {
+    modifier isInitiatable(bytes32 _hashedSecret, address _participant, uint256 _refundTimestamp, uint256 _watcherDeadline) {
         require(_participant != address(0), "invalid participant address");
         require(swaps[_hashedSecret].state == State.Empty, "swap for this hash is already initiated");
         require(block.timestamp < _refundTimestamp, "refundTimestamp has already come");
-        require(_countdown < _refundTimestamp, "countdown exceeds the refundTimestamp");
+        require(block.timestamp < _watcherDeadline, "watcherDeadline has already come");
         _;
     }
 
@@ -167,16 +288,6 @@ contract Atomex is ReentrancyGuard {
 
     modifier isAddable(bytes32 _hashedSecret) {
         require(block.timestamp < swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
-        _;
-    }
-
-    modifier isActivated(bytes32 _hashedSecret) {
-        require(swaps[_hashedSecret].active, "swap is not active");
-        _;
-    }
-
-    modifier isNotActivated(bytes32 _hashedSecret) {
-        require(!swaps[_hashedSecret].active, "swap is already active");
         _;
     }
 
@@ -191,10 +302,9 @@ contract Atomex is ReentrancyGuard {
         _;
     }
 
-    function initiate (
-        bytes32 _hashedSecret, address _contract, address _participant, uint256 _refundTimestamp, 
-        uint256 _countdown, uint256 _value, uint256 _payoff, bool _active)
-        public nonReentrant isInitiatable(_hashedSecret, _participant, _refundTimestamp, _countdown)
+    function initiate (bytes32 _hashedSecret, address _contract, address _participant, address _watcher, 
+        uint256 _refundTimestamp, uint256 _watcherDeadline, uint256 _value, uint256 _payoff)
+        public nonReentrant isInitiatable(_hashedSecret, _participant, _refundTimestamp, _watcherDeadline)
     {
         IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
 
@@ -203,10 +313,10 @@ contract Atomex is ReentrancyGuard {
         swaps[_hashedSecret].contractAddr = _contract;
         swaps[_hashedSecret].participant = _participant;
         swaps[_hashedSecret].initiator = msg.sender;
+        swaps[_hashedSecret].watcher = _watcher;
         swaps[_hashedSecret].refundTimestamp = _refundTimestamp;
-        swaps[_hashedSecret].countdown = _countdown;
+        swaps[_hashedSecret].watcherDeadline = _watcherDeadline;
         swaps[_hashedSecret].payoff = _payoff;
-        swaps[_hashedSecret].active = _active;
         swaps[_hashedSecret].state = State.Initiated;
 
         emit Initiated(
@@ -214,11 +324,11 @@ contract Atomex is ReentrancyGuard {
             _contract,
             _participant,
             msg.sender,
+            _watcher,
             _refundTimestamp,
-            _countdown,
+            _watcherDeadline,
             _value.sub(_payoff),
-            _payoff,
-            _active
+            _payoff
         );
     }
 
@@ -236,57 +346,57 @@ contract Atomex is ReentrancyGuard {
             swaps[_hashedSecret].value
         );
     }
-
-    function activate (bytes32 _hashedSecret)
-        public nonReentrant isInitiated(_hashedSecret) isNotActivated(_hashedSecret) onlyByInitiator(_hashedSecret)
-    {
-        swaps[_hashedSecret].active = true;
-
-        emit Activated(
-            _hashedSecret
-        );
-    }
-
-    function redeem(bytes32 _hashedSecret, bytes32 _secret)
-        public nonReentrant isInitiated(_hashedSecret) isActivated(_hashedSecret) isRedeemable(_hashedSecret, _secret)
-    {
-        swaps[_hashedSecret].state = State.Redeemed;
-
-        if (block.timestamp > swaps[_hashedSecret].refundTimestamp.sub(swaps[_hashedSecret].countdown)) {
-
+  
+    function withdraw(bytes32 _hashedSecret, address _contract, address _receiver, uint256 _watcherDeadLine, bool _slash) internal {
+        if (msg.sender == swaps[_hashedSecret].watcher) {
             IERC20(swaps[_hashedSecret].contractAddr)
-                .safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value);
-
+                .safeTransfer(_receiver, swaps[_hashedSecret].value);
             if(swaps[_hashedSecret].payoff > 0) {
                 IERC20(swaps[_hashedSecret].contractAddr)
                     .safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
+            }
+        }
+        else if (block.timestamp > _watcherDeadLine && watchTowersERC20[_contract][msg.sender].registered == true) {
+            IERC20(swaps[_hashedSecret].contractAddr)
+                .safeTransfer(_receiver, swaps[_hashedSecret].value);
+            if(swaps[_hashedSecret].payoff > 0) {
+                IERC20(swaps[_hashedSecret].contractAddr)
+                    .safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
+            }
+            if(swaps[_hashedSecret].watcher != address(0) && _slash) {
+                removeWatcher(_contract, swaps[_hashedSecret].watcher);
             }
         }
         else {
             IERC20(swaps[_hashedSecret].contractAddr)
                 .safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
         }
+        
+        delete swaps[_hashedSecret];
+    }
 
+    function redeem(bytes32 _hashedSecret, bytes32 _secret, bool _slash)
+        public nonReentrant isInitiated(_hashedSecret) isRedeemable(_hashedSecret, _secret)
+    {
+        swaps[_hashedSecret].state = State.Redeemed;
+
+        withdraw(_hashedSecret, swaps[_hashedSecret].contractAddr, swaps[_hashedSecret].participant, swaps[_hashedSecret].watcherDeadline, _slash);
+    
         emit Redeemed(
             _hashedSecret,
             _secret
         );
-
-        delete swaps[_hashedSecret];
     }
 
-    function refund(bytes32 _hashedSecret)
+    function refund(bytes32 _hashedSecret, bool _slash)
         public nonReentrant isInitiated(_hashedSecret) isRefundable(_hashedSecret)
     {
         swaps[_hashedSecret].state = State.Refunded;
 
-        IERC20(swaps[_hashedSecret].contractAddr)
-            .safeTransfer(swaps[_hashedSecret].initiator, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
+        withdraw(_hashedSecret, swaps[_hashedSecret].contractAddr, swaps[_hashedSecret].initiator, swaps[_hashedSecret].watcherDeadline, _slash);
 
         emit Refunded(
             _hashedSecret
         );
-
-        delete swaps[_hashedSecret];
     }
 }

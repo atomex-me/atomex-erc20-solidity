@@ -201,8 +201,6 @@ contract WatchTower is Ownable, ReentrancyGuard {
         
         emit WatcherWithdrawn(_contract, msg.sender);
         
-        msg.sender.transfer(watchTowersERC20[_contract][msg.sender].deposit);
-        
         IERC20(_contract).safeTransfer(msg.sender, watchTowersERC20[_contract][msg.sender].deposit);
         
         delete watchTowersERC20[_contract][msg.sender];

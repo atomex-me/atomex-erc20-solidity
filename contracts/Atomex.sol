@@ -1,16 +1,23 @@
-pragma solidity ^0.5.0;
+// SPDX-License-Identifier: GPL-3.0
+
+pragma solidity ^0.8.0;
 
 // From file: openzeppelin-contracts/contracts/math/SafeMath.sol
 library SafeMath {
-    function add(uint256 a, uint256 b) internal pure returns (uint256) {
-        uint256 c = a + b;
-        require(c >= a, "SafeMath: addition overflow");
+    function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+        c = a + b;
+        require(c >= a, "SafeMath add wrong value");
         return c;
     }
     function sub(uint256 a, uint256 b) internal pure returns (uint256) {
-        require(b <= a, "SafeMath: subtraction overflow");
-        uint256 c = a - b;
-        return c;
+        require(b <= a, "SafeMath sub wrong value");
+        return a - b;
+    }
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        // assert(b > 0); // Solidity automatically throws when dividing by 0
+        // uint256 c = a / b;
+        // assert(a == b * c + a % b); // There is no case in which this doesn't hold
+        return a / b;
     }
 }
 
@@ -79,30 +86,33 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
-// File: openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol
-contract ReentrancyGuard {
-    bool private _notEntered;
+// From file: OpenZeppelin/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol
+abstract contract ReentrancyGuard {
+    uint256 private constant _NOT_ENTERED = 1;
+    uint256 private constant _ENTERED = 2;
 
-    constructor () internal {
-        _notEntered = true;
+    uint256 private _status;
+
+    constructor () {
+        _status = _NOT_ENTERED;
     }
 
     modifier nonReentrant() {
-        require(_notEntered, "ReentrancyGuard: reentrant call");
-        _notEntered = false;
+        require(_status != _ENTERED, "ReentrancyGuard: reentrant call");
+        _status = _ENTERED;
         _;
-        _notEntered = true;
+        _status = _NOT_ENTERED;
     }
 }
 
-contract Ownable {
+abstract contract Ownable {
     address private _owner;
     address private _successor;
     
     event OwnershipTransferred(address previousOwner, address newOwner);
     event NewOwnerProposed(address previousOwner, address newOwner);
     
-    constructor() public {
+    constructor() {
         setOwner(msg.sender);
     }
     
@@ -132,89 +142,71 @@ contract Ownable {
         _;
     }
     
-    function proposeOwner(address newOwner) public onlyOwner {
+    function proposeOwner(address newOwner) public virtual onlyOwner {
         require(newOwner != address(0), "invalid owner address");
         emit NewOwnerProposed(owner(), newOwner);
         setSuccessor(newOwner);
     }
     
-    function acceptOwnership() public onlySuccessor {
+    function acceptOwnership() public virtual onlySuccessor {
         emit OwnershipTransferred(owner(), successor());
         setOwner(successor());
+    }
+    
+    function renounceOwnership() public virtual onlyOwner {
+        emit OwnershipTransferred(owner(), address(0));
+        setOwner(address(0));
     }
 }
 
 contract WatchTower is Ownable, ReentrancyGuard {
     using SafeMath for uint256;
-    using SafeERC20 for IERC20;
     
     struct Watcher {
         uint256 deposit;
-        bool registered;
-        uint256 withdrawalTimeout;
-        uint256 withdrawalTimestamp;
+        bool active;
     }
 
-    event NewWatcherProposed(address _contract, address _newWatcher, uint256 _deposit, uint256 _withdrawalTimeout);
-    event NewWatcherRegistered(address _contract, address _newWatcher);
-    event WatcherDeactivated(address _contract, address _watcher);
-    event WatcherWithdrawn(address _contract, address _watcher);
-    event WatcherRemoved(address _contract, address _watcher);
+    event NewWatcherProposed(address _newWatcher, uint256 _deposit);
+    event NewWatcherActivated(address _newWatcher);
+    event WatcherDeactivated(address _watcher);
+    event WatcherWithdrawn(address _watcher);
     
-    mapping(address => mapping(address => Watcher)) public watchTowersERC20;
-    
-    function proposeWatcher (address _contract, address _newWatcher, uint256 _value, uint256 _withdrawalTimeout) public payable {
+    mapping(address => Watcher) public watchTowers;
+
+    function proposeWatcher (address _newWatcher) public payable {
         require(_newWatcher != address(0), "invalid watcher address");
-        require(watchTowersERC20[_contract][_newWatcher].deposit == 0, "watcher is already registered");
-        require(_value > 0, "trasaction value must be greater then zero");
+        require(msg.value > 0, "trasaction value must be greater then zero");
         
-        IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
+        emit NewWatcherProposed(_newWatcher, msg.value);
         
-        emit NewWatcherProposed(_contract, _newWatcher, _value, _withdrawalTimeout);
-        
-        watchTowersERC20[_contract][_newWatcher].deposit = _value;
-        watchTowersERC20[_contract][_newWatcher].withdrawalTimeout = _withdrawalTimeout;
+        watchTowers[_newWatcher].deposit = watchTowers[_newWatcher].deposit.add(msg.value);
     }
     
-    function acceptWatcher (address _contract, address _newWatcher) public onlyOwner {
-        require(watchTowersERC20[_contract][_newWatcher].deposit > 0, "watcher does not exist");
+    function activateWatcher (address _newWatcher) public onlyOwner {
+        require(watchTowers[_newWatcher].deposit > 0, "watcher does not exist");
         
-        emit NewWatcherRegistered(_contract, _newWatcher);
+        emit NewWatcherActivated(_newWatcher);
         
-        watchTowersERC20[_contract][_newWatcher].registered = true;
+        watchTowers[_newWatcher].active = true;
     }
     
-    function deactivateWatcher (address _contract, address _watcher) public {
-        require(msg.sender == _watcher || msg.sender == owner(), "sender is not authorised");
-        require(watchTowersERC20[_contract][_watcher].deposit > 0, "watcher does not exist");
+    function deactivateWatcher (address _watcher) public onlyOwner {
+        require(watchTowers[_watcher].active == true, "watcher does not exist");
         
-        emit WatcherRemoved(_contract, _watcher);
+        emit WatcherDeactivated(_watcher);
         
-        watchTowersERC20[_contract][_watcher].registered = false;
-        watchTowersERC20[_contract][_watcher].withdrawalTimestamp = block.timestamp.add(watchTowersERC20[_contract][msg.sender].withdrawalTimeout);
-    }  
-    
-    function withdrawWatcher (address _contract) public nonReentrant {
-        require(watchTowersERC20[_contract][msg.sender].deposit > 0, "watcher does not exist");
-        require(watchTowersERC20[_contract][msg.sender].registered == false, "watcher is not deactivated");
-        require(block.timestamp > watchTowersERC20[_contract][msg.sender].withdrawalTimestamp, "withdrawalTimestamp has not come");
-        
-        emit WatcherWithdrawn(_contract, msg.sender);
-        
-        IERC20(_contract).safeTransfer(msg.sender, watchTowersERC20[_contract][msg.sender].deposit);
-        
-        delete watchTowersERC20[_contract][msg.sender];
+        watchTowers[_watcher].active = false;
     }
     
-    function removeWatcher (address _contract, address _watcher) internal {
-        require(watchTowersERC20[_contract][_watcher].deposit > 0, "watcher does not exist");
-        require(watchTowersERC20[_contract][_watcher].registered == true, "watcher is not registered");
+    function withdrawWatcher () public nonReentrant {
+        require(watchTowers[msg.sender].deposit > 0, "watcher does not exist");
 
-        emit WatcherRemoved(_contract, _watcher);
+        emit WatcherWithdrawn(msg.sender);
         
-        IERC20(_contract).safeTransfer(msg.sender, watchTowersERC20[_contract][_watcher].deposit);
+        payable(msg.sender).transfer(watchTowers[msg.sender].deposit);
         
-        delete watchTowersERC20[_contract][_watcher];
+        delete watchTowers[msg.sender];
     }
 }
 
@@ -222,7 +214,9 @@ contract Atomex is WatchTower {
     using SafeMath for uint256;
     using SafeERC20 for IERC20;
 
-    enum State { Empty, Initiated, Redeemed, Refunded }
+    uint releaseTimeout = 1 weeks;
+
+    enum State { Empty, Initiated, Redeemed, Refunded, Lost }
 
     struct Swap {
         bytes32 hashedSecret;
@@ -238,7 +232,7 @@ contract Atomex is WatchTower {
     }
 
     event Initiated(
-        bytes32 indexed _hashedSecret,
+        bytes32 indexed swapId,
         address indexed _contract,
         address indexed _participant,
         address _initiator,
@@ -249,18 +243,16 @@ contract Atomex is WatchTower {
         uint256 _payoff
     );
 
-    event Added(
-        bytes32 indexed _hashedSecret,
-        address _sender,
-        uint256 _value  
-    );
-
     event Redeemed(
         bytes32 indexed _hashedSecret,
         bytes32 _secret
     );
 
     event Refunded(
+        bytes32 indexed _hashedSecret
+    );
+        
+    event Released(
         bytes32 indexed _hashedSecret
     );
 
@@ -271,54 +263,67 @@ contract Atomex is WatchTower {
         _;
     }
 
-    modifier isInitiatable(bytes32 _hashedSecret, address _participant, uint256 _refundTimestamp, uint256 _watcherDeadline) {
+    modifier isInitiatable(address _participant, uint256 _refundTimestamp, address _watcher, uint256 _watcherDeadline) {
         require(_participant != address(0), "invalid participant address");
-        require(swaps[_hashedSecret].state == State.Empty, "swap for this hash is already initiated");
         require(block.timestamp < _refundTimestamp, "refundTimestamp has already come");
-        require(block.timestamp < _watcherDeadline, "watcherDeadline has already come");
+        require(watchTowers[_watcher].active == true, "watcher does not exist");
+        
+        uint256 _refundTimeout = _refundTimestamp.sub(block.timestamp);
+        require((_watcherDeadline < _refundTimestamp && _watcherDeadline.sub(block.timestamp) > _refundTimeout.div(2) && _refundTimestamp.sub(_watcherDeadline) > _refundTimeout.div(5)) ||
+                (_watcherDeadline > _refundTimestamp && _refundTimeout > _watcherDeadline.sub(_refundTimestamp)), "invalid watcherDeadline");
+        _;
+    }
+    
+    modifier isInitiated(bytes32 _swapId) {
+        require(swaps[_swapId].state == State.Initiated, "swap for this ID is empty or already spent");
         _;
     }
 
-    modifier isInitiated(bytes32 _hashedSecret) {
-        require(swaps[_hashedSecret].state == State.Initiated, "swap for this hash is empty or already spent");
+    modifier isRedeemable(bytes32 _swapId, bytes32 _secret) {
+        require(block.timestamp < swaps[_swapId].refundTimestamp || msg.sender == swaps[_swapId].initiator, "refundTimestamp has already come");
+        require(sha256(abi.encodePacked(sha256(abi.encodePacked(_secret)))) == swaps[_swapId].hashedSecret, "secret is not correct");
         _;
     }
 
-    modifier isAddable(bytes32 _hashedSecret) {
-        require(block.timestamp < swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
+    modifier isRefundable(bytes32 _swapId) {
+        require(block.timestamp >= swaps[_swapId].refundTimestamp, "refundTimestamp has not come");
         _;
     }
 
-    modifier isRedeemable(bytes32 _hashedSecret, bytes32 _secret) {
-        require(block.timestamp < swaps[_hashedSecret].refundTimestamp, "refundTimestamp has already come");
-        require(sha256(abi.encodePacked(sha256(abi.encodePacked(_secret)))) == _hashedSecret, "secret is not correct");
+    modifier isReleasable(bytes32 _swapId) {
+        require(block.timestamp >= swaps[_swapId].refundTimestamp.add(releaseTimeout), "releaseTimeout has not passed");
         _;
     }
-
-    modifier isRefundable(bytes32 _hashedSecret) {
-        require(block.timestamp >= swaps[_hashedSecret].refundTimestamp, "refundTimestamp has not come");
-        _;
+    
+    function multikey(bytes32 _hashedSecret, address _initiator) public pure returns(bytes32) {
+        return sha256(abi.encodePacked(_hashedSecret, _initiator));
     }
+    
 
     function initiate (bytes32 _hashedSecret, address _contract, address _participant, address _watcher, 
         uint256 _refundTimestamp, uint256 _watcherDeadline, uint256 _value, uint256 _payoff)
-        public nonReentrant isInitiatable(_hashedSecret, _participant, _refundTimestamp, _watcherDeadline)
+        public nonReentrant isInitiatable(_participant, _refundTimestamp, _watcher, _watcherDeadline)
     {
+
+        bytes32 swapId = multikey(_hashedSecret, msg.sender);
+        
+        require(swaps[swapId].state == State.Empty, "swap for this hash is already initiated");
+        
         IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
 
-        swaps[_hashedSecret].value = _value.sub(_payoff);
-        swaps[_hashedSecret].hashedSecret = _hashedSecret;
-        swaps[_hashedSecret].contractAddr = _contract;
-        swaps[_hashedSecret].participant = _participant;
-        swaps[_hashedSecret].initiator = msg.sender;
-        swaps[_hashedSecret].watcher = _watcher;
-        swaps[_hashedSecret].refundTimestamp = _refundTimestamp;
-        swaps[_hashedSecret].watcherDeadline = _watcherDeadline;
-        swaps[_hashedSecret].payoff = _payoff;
-        swaps[_hashedSecret].state = State.Initiated;
+        swaps[swapId].value = _value.sub(_payoff);
+        swaps[swapId].hashedSecret = _hashedSecret;
+        swaps[swapId].contractAddr = _contract;
+        swaps[swapId].participant = _participant;
+        swaps[swapId].initiator = msg.sender;
+        swaps[swapId].watcher = _watcher;
+        swaps[swapId].refundTimestamp = _refundTimestamp;
+        swaps[swapId].watcherDeadline = _watcherDeadline;
+        swaps[swapId].payoff = _payoff;
+        swaps[swapId].state = State.Initiated;
 
         emit Initiated(
-            _hashedSecret,
+            swapId,
             _contract,
             _participant,
             msg.sender,
@@ -330,71 +335,60 @@ contract Atomex is WatchTower {
         );
     }
 
-    function add (bytes32 _hashedSecret, uint _value)
-        public nonReentrant isInitiated(_hashedSecret) isAddable(_hashedSecret)
-    {
-        IERC20(swaps[_hashedSecret].contractAddr)
-            .safeTransferFrom(msg.sender, address(this), _value);
-
-        swaps[_hashedSecret].value = swaps[_hashedSecret].value.add(_value);
-
-        emit Added(
-            _hashedSecret,
-            msg.sender,
-            swaps[_hashedSecret].value
-        );
-    }
-  
-    function withdraw(bytes32 _hashedSecret, address _contract, address _receiver, uint256 _watcherDeadLine, bool _slash) internal {
-        if (msg.sender == swaps[_hashedSecret].watcher) {
-            IERC20(swaps[_hashedSecret].contractAddr)
-                .safeTransfer(_receiver, swaps[_hashedSecret].value);
-            if(swaps[_hashedSecret].payoff > 0) {
-                IERC20(swaps[_hashedSecret].contractAddr)
-                    .safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
-            }
-        }
-        else if (block.timestamp > _watcherDeadLine && watchTowersERC20[_contract][msg.sender].registered == true) {
-            IERC20(swaps[_hashedSecret].contractAddr)
-                .safeTransfer(_receiver, swaps[_hashedSecret].value);
-            if(swaps[_hashedSecret].payoff > 0) {
-                IERC20(swaps[_hashedSecret].contractAddr)
-                    .safeTransfer(msg.sender, swaps[_hashedSecret].payoff);
-            }
-            if(swaps[_hashedSecret].watcher != address(0) && _slash) {
-                removeWatcher(_contract, swaps[_hashedSecret].watcher);
+    function withdraw(bytes32 _swapId, address _receiver) internal {
+        if (msg.sender == swaps[_swapId].watcher
+            || (block.timestamp >= swaps[_swapId].watcherDeadline && watchTowers[msg.sender].active == true)
+            || (msg.sender == swaps[_swapId].initiator && _receiver == swaps[_swapId].participant)) {
+            IERC20(swaps[_swapId].contractAddr)
+                .safeTransfer(_receiver, swaps[_swapId].value);
+            if(swaps[_swapId].payoff > 0) {
+                IERC20(swaps[_swapId].contractAddr)
+                    .safeTransfer(msg.sender, swaps[_swapId].payoff);
             }
         }
         else {
-            IERC20(swaps[_hashedSecret].contractAddr)
-                .safeTransfer(swaps[_hashedSecret].participant, swaps[_hashedSecret].value.add(swaps[_hashedSecret].payoff));
+            IERC20(swaps[_swapId].contractAddr)
+                .safeTransfer(swaps[_swapId].participant, swaps[_swapId].value.add(swaps[_swapId].payoff));
         }
         
-        delete swaps[_hashedSecret];
+        delete swaps[_swapId];
     }
-
-    function redeem(bytes32 _hashedSecret, bytes32 _secret, bool _slash)
-        public nonReentrant isInitiated(_hashedSecret) isRedeemable(_hashedSecret, _secret)
-    {
-        swaps[_hashedSecret].state = State.Redeemed;
-
-        withdraw(_hashedSecret, swaps[_hashedSecret].contractAddr, swaps[_hashedSecret].participant, swaps[_hashedSecret].watcherDeadline, _slash);
     
+    function redeem(bytes32 _swapId, bytes32 _secret)
+        public nonReentrant isInitiated(_swapId) isRedeemable(_swapId, _secret)
+    {
+        swaps[_swapId].state = State.Redeemed;
+        
         emit Redeemed(
-            _hashedSecret,
+            swaps[_swapId].hashedSecret,
             _secret
         );
+
+        withdraw(_swapId, swaps[_swapId].participant);
     }
 
-    function refund(bytes32 _hashedSecret, bool _slash)
-        public nonReentrant isInitiated(_hashedSecret) isRefundable(_hashedSecret)
+    function refund(bytes32 _swapId)
+        public nonReentrant isInitiated(_swapId) isRefundable(_swapId)
     {
-        swaps[_hashedSecret].state = State.Refunded;
-
-        withdraw(_hashedSecret, swaps[_hashedSecret].contractAddr, swaps[_hashedSecret].initiator, swaps[_hashedSecret].watcherDeadline, _slash);
+        swaps[_swapId].state = State.Refunded;
 
         emit Refunded(
-            _hashedSecret
+            swaps[_swapId].hashedSecret
         );
+
+        withdraw(_swapId, swaps[_swapId].initiator);
+
+    }
+    
+    function release(bytes32 _swapId)
+        public onlyOwner() isReleasable(_swapId)
+    {
+        swaps[_swapId].state = State.Lost;
+
+        emit Released(
+            swaps[_swapId].hashedSecret
+        );
+        
+        withdraw(_swapId, owner());
     }
 }

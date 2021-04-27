@@ -263,14 +263,10 @@ contract Atomex is WatchTower {
         _;
     }
 
-    modifier isInitiatable(address _participant, uint256 _refundTimestamp, address _watcher, uint256 _watcherDeadline) {
+    modifier isInitiatable(address _participant, uint256 _refundTimestamp, address _watcher) {
         require(_participant != address(0), "invalid participant address");
         require(block.timestamp < _refundTimestamp, "refundTimestamp has already come");
         require(watchTowers[_watcher].active == true, "watcher does not exist");
-        
-        uint256 _refundTimeout = _refundTimestamp.sub(block.timestamp);
-        require((_watcherDeadline < _refundTimestamp && _watcherDeadline.sub(block.timestamp) > _refundTimeout.div(2) && _refundTimestamp.sub(_watcherDeadline) > _refundTimeout.div(5)) ||
-                (_watcherDeadline > _refundTimestamp && _refundTimeout > _watcherDeadline.sub(_refundTimestamp)), "invalid watcherDeadline");
         _;
     }
     
@@ -301,8 +297,8 @@ contract Atomex is WatchTower {
     
 
     function initiate (bytes32 _hashedSecret, address _contract, address _participant, address _watcher, 
-        uint256 _refundTimestamp, uint256 _watcherDeadline, uint256 _value, uint256 _payoff)
-        public nonReentrant isInitiatable(_participant, _refundTimestamp, _watcher, _watcherDeadline)
+        uint256 _refundTimestamp, bool _watcherForRedeem, uint256 _value, uint256 _payoff)
+        public nonReentrant isInitiatable(_participant, _refundTimestamp, _watcher)
     {
 
         bytes32 swapId = multikey(_hashedSecret, msg.sender);
@@ -318,7 +314,10 @@ contract Atomex is WatchTower {
         swaps[swapId].initiator = msg.sender;
         swaps[swapId].watcher = _watcher;
         swaps[swapId].refundTimestamp = _refundTimestamp;
-        swaps[swapId].watcherDeadline = _watcherDeadline;
+        if(_watcherForRedeem)
+            swaps[swapId].watcherDeadline = _refundTimestamp.sub(_refundTimestamp.sub(block.timestamp).div(3));
+        else
+            swaps[swapId].watcherDeadline = _refundTimestamp.add(_refundTimestamp.sub(block.timestamp).div(2));
         swaps[swapId].payoff = _payoff;
         swaps[swapId].state = State.Initiated;
 
@@ -329,26 +328,26 @@ contract Atomex is WatchTower {
             msg.sender,
             _watcher,
             _refundTimestamp,
-            _watcherDeadline,
+            swaps[swapId].watcherDeadline,
             _value.sub(_payoff),
             _payoff
         );
     }
 
-    function withdraw(bytes32 _swapId, address _receiver) internal {
+    function withdraw(bytes32 _swapId, address _contract, address _receiver) internal {
         if (msg.sender == swaps[_swapId].watcher
             || (block.timestamp >= swaps[_swapId].watcherDeadline && watchTowers[msg.sender].active == true)
             || (msg.sender == swaps[_swapId].initiator && _receiver == swaps[_swapId].participant)) {
-            IERC20(swaps[_swapId].contractAddr)
+            IERC20(_contract)
                 .safeTransfer(_receiver, swaps[_swapId].value);
             if(swaps[_swapId].payoff > 0) {
-                IERC20(swaps[_swapId].contractAddr)
+                IERC20(_contract)
                     .safeTransfer(msg.sender, swaps[_swapId].payoff);
             }
         }
         else {
-            IERC20(swaps[_swapId].contractAddr)
-                .safeTransfer(swaps[_swapId].participant, swaps[_swapId].value.add(swaps[_swapId].payoff));
+            IERC20(_contract)
+                .safeTransfer(_receiver, swaps[_swapId].value.add(swaps[_swapId].payoff));
         }
         
         delete swaps[_swapId];
@@ -364,7 +363,7 @@ contract Atomex is WatchTower {
             _secret
         );
 
-        withdraw(_swapId, swaps[_swapId].participant);
+        withdraw(_swapId, swaps[_swapId].contractAddr, swaps[_swapId].participant);
     }
 
     function refund(bytes32 _swapId)
@@ -376,7 +375,7 @@ contract Atomex is WatchTower {
             swaps[_swapId].hashedSecret
         );
 
-        withdraw(_swapId, swaps[_swapId].initiator);
+        withdraw(_swapId, swaps[_swapId].contractAddr, swaps[_swapId].initiator);
 
     }
     
@@ -389,6 +388,6 @@ contract Atomex is WatchTower {
             swaps[_swapId].hashedSecret
         );
         
-        withdraw(_swapId, owner());
+        withdraw(_swapId, swaps[_swapId].contractAddr, owner());
     }
 }

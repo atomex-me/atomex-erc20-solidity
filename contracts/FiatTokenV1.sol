@@ -1,7 +1,18 @@
-pragma solidity ^0.5.0;
+// SPDX-License-Identifier: GPL-3.0
 
+pragma solidity ^0.8.0;
+
+// From file: openzeppelin-contracts/contracts/math/SafeMath.sol
 library SafeMath {
-
+  function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
+    c = a + b;
+    require(c >= a, "SafeMath add wrong value");
+    return c;
+  }
+  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+    require(b <= a, "SafeMath sub wrong value");
+    return a - b;
+  }
   function mul(uint256 a, uint256 b) internal pure returns (uint256 c) {
     if (a == 0) {
       return 0;
@@ -10,24 +21,15 @@ library SafeMath {
     assert(c / a == b);
     return c;
   }
-
   function div(uint256 a, uint256 b) internal pure returns (uint256) {
+    // assert(b > 0); // Solidity automatically throws when dividing by 0
+    // uint256 c = a / b;
+    // assert(a == b * c + a % b); // There is no case in which this doesn't hold
     return a / b;
-  }
-
-  function sub(uint256 a, uint256 b) internal pure returns (uint256) {
-    assert(b <= a);
-    return a - b;
-  }
-
-  function add(uint256 a, uint256 b) internal pure returns (uint256 c) {
-    c = a + b;
-    assert(c >= a);
-    return c;
   }
 }
 
-contract Ownable {
+abstract contract Ownable {
 
   address private _owner;
   address private _successor;
@@ -35,7 +37,7 @@ contract Ownable {
   event OwnershipTransferred(address previousOwner, address newOwner);
   event NewOwnerProposed(address previousOwner, address newOwner);
 
-  constructor() public {
+  constructor() {
     setOwner(msg.sender);
   }
 
@@ -77,17 +79,17 @@ contract Ownable {
   }
 }
 
-contract ERC20Basic {
-    function totalSupply() public view returns (uint256);
-    function balanceOf(address who) public view returns (uint256);
-    function transfer(address to, uint256 value) public returns (bool);
+abstract contract ERC20Basic {
+    function totalSupply() virtual public view returns (uint256);
+    function balanceOf(address who) virtual public view returns (uint256);
+    function transfer(address to, uint256 value) virtual public returns (bool);
     event Transfer(address indexed from, address indexed to, uint256 value);
 }
 
-contract ERC20 is ERC20Basic {
-    function allowance(address owner, address spender) public view returns (uint256);
-    function transferFrom(address from, address to, uint256 value) public returns (bool);
-    function approve(address spender, uint256 value) public returns (bool);
+abstract contract ERC20 is ERC20Basic {
+    function allowance(address owner, address spender) virtual public view returns (uint256);
+    function transferFrom(address from, address to, uint256 value) virtual public returns (bool);
+    function approve(address spender, uint256 value) virtual public returns (bool);
 	event Approval(
 	    address indexed owner,
 	    address indexed spender,
@@ -171,25 +173,25 @@ contract FiatTokenV1 is Ownable, ERC20 {
         return minters[account];
     }
 
-    function allowance(address owner, address spender) public view returns (uint256) {
+    function allowance(address owner, address spender) override public view returns (uint256) {
         return allowed[owner][spender];
     }
 
-    function totalSupply() public view returns (uint256) {
+    function totalSupply() override public view returns (uint256) {
         return totalSupply_;
     }
 
-    function balanceOf(address account) public view returns (uint256) {
+    function balanceOf(address account) override public view returns (uint256) {
         return balances[account];
     }
 
-    function approve(address _spender, uint256 _value) public returns (bool) {
+    function approve(address _spender, uint256 _value) override public returns (bool) {
         allowed[msg.sender][_spender] = _value;
         emit Approval(msg.sender, _spender, _value);
         return true;
     }
 
-    function transferFrom(address _from, address _to, uint256 _value) public returns (bool) {
+    function transferFrom(address _from, address _to, uint256 _value) override public returns (bool) {
         require(_to != address(0));
         require(_value <= balances[_from]);
         require(_value <= allowed[_from][msg.sender]);
@@ -201,7 +203,7 @@ contract FiatTokenV1 is Ownable, ERC20 {
         return true;
     }
 
-    function transfer(address _to, uint256 _value) public returns (bool) {
+    function transfer(address _to, uint256 _value) override public returns (bool) {
         require(_to != address(0));
         require(_value <= balances[msg.sender]);
 

@@ -232,7 +232,7 @@ contract Atomex is WatchTower {
     }
 
     event Initiated(
-        bytes32 indexed swapId,
+        bytes32 indexed _swapId,
         address indexed _contract,
         address indexed _participant,
         address _initiator,
@@ -258,8 +258,8 @@ contract Atomex is WatchTower {
 
     mapping(bytes32 => Swap) public swaps;
 
-    modifier onlyByInitiator(bytes32 _hashedSecret) {
-        require(msg.sender == swaps[_hashedSecret].initiator, "sender is not the initiator");
+    modifier onlyByInitiator(bytes32 _swapId) {
+        require(msg.sender == swaps[_swapId].initiator, "sender is not the initiator");
         _;
     }
 
@@ -300,10 +300,9 @@ contract Atomex is WatchTower {
         uint256 _refundTimestamp, bool _watcherForRedeem, uint256 _value, uint256 _payoff)
         public nonReentrant isInitiatable(_participant, _refundTimestamp, _watcher)
     {
-
         bytes32 swapId = multikey(_hashedSecret, msg.sender);
         
-        require(swaps[swapId].state == State.Empty, "swap for this hash is already initiated");
+        require(swaps[swapId].state == State.Empty, "swap for this ID is already initiated");
         
         IERC20(_contract).safeTransferFrom(msg.sender, address(this), _value);
 
@@ -334,7 +333,8 @@ contract Atomex is WatchTower {
         );
     }
 
-    function withdraw(bytes32 _swapId, address _contract, address _receiver) internal {
+    function withdraw(bytes32 _swapId, address _contract, address _receiver) internal 
+    {
         if (msg.sender == swaps[_swapId].watcher
             || (block.timestamp >= swaps[_swapId].watcherDeadline && watchTowers[msg.sender].active == true)
             || (msg.sender == swaps[_swapId].initiator && _receiver == swaps[_swapId].participant)) {

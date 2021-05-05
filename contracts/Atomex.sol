@@ -232,7 +232,7 @@ contract Atomex is WatchTower {
     }
 
     event Initiated(
-        bytes32 indexed _swapId,
+        bytes32 indexed _hashedSecret,
         address indexed _contract,
         address indexed _participant,
         address _initiator,
@@ -321,7 +321,7 @@ contract Atomex is WatchTower {
         swaps[swapId].state = State.Initiated;
 
         emit Initiated(
-            swapId,
+            _hashedSecret,
             _contract,
             _participant,
             msg.sender,

@@ -1229,7 +1229,7 @@ contract('Atomex', async (accounts) => {
         let watcherDeadline = (await getCurrentTime()) + refundTime * 2 / 3;
 
         assert.equal(res.logs[0].event, "Initiated");
-        assert.equal(res.logs[0].args._swapId, hashedID);
+        assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
         assert.equal(res.logs[0].args._contract, contractUSDC.address);
         assert.equal(res.logs[0].args._participant, participant);
         assert.equal(res.logs[0].args._initiator, sender);

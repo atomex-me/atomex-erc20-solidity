@@ -1,5 +1,5 @@
-const Atomex = artifacts.require('../contracts/Atomex.sol');
-const FiatTokenV1 = artifacts.require('../contracts/FiatTokenV1.sol');
+const Atomex = artifacts.require('./contracts/Atomex.sol');
+const FiatTokenV1 = artifacts.require('./contracts/FiatTokenV1.sol');
 
 const sleep = async function (time) {
     await web3.currentProvider.send({
@@ -48,6 +48,8 @@ contract('Atomex', async (accounts) => {
         await contractUSDC.configureMinter(owner, supply);
 
         await contractUSDC.mint(owner, supply);
+
+        await contractUSDC.transfer(accounts[1], supply/2);
     });
 
     it('should approve properly', async () => {
@@ -56,128 +58,214 @@ contract('Atomex', async (accounts) => {
         await contractUSDC.approve(contractSwap.address, value);
 
         let balance = await contractUSDC.balanceOf(owner);
-        assert.equal(balance, supply);
+        assert.equal(balance, supply/2);
         
         let allowance = await contractUSDC.allowance(owner, contractSwap.address);
         assert.equal(allowance, value);
     });
 
+    it('should manage watchers properly', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        let Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(deposit));
+        assert.equal(Watcher.active, false);
+        
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+        Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(deposit));
+        assert.equal(Watcher.active, true);
+
+        await contractSwap.deactivateWatcher(watcher, {from: owner, value: 0});
+        Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(deposit));
+        assert.equal(Watcher.active, false);
+    });
+
+    it('should not deactivate watchers if not owner', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let sender = accounts[1];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        try {
+            await contractSwap.deactivateWatcher(watcher, {from: sender, value: 0});
+        }
+        catch (error) {
+            assert(error.message.indexOf('sender is not the owner') >= 0);
+        }
+    });
+
+    it('should withdraw watchers properly', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        let Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(deposit));
+        assert.equal(Watcher.active, false);
+        
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+        Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(deposit));
+        assert.equal(Watcher.active, true);
+
+        let watcherBalance = await web3.eth.getBalance(watcher);
+        let txReceipt = await contractSwap.withdrawWatcher({from: watcher, value: 0});
+        let newWatcherBalance = await web3.eth.getBalance(watcher);
+        let tx = await web3.eth.getTransaction(txReceipt.tx);
+        assert.deepEqual(BigInt(newWatcherBalance), BigInt(watcherBalance) + BigInt(deposit) - BigInt(txReceipt.receipt.gasUsed * tx.gasPrice));
+
+        let contractSwapBalance = await web3.eth.getBalance(contractSwap.address);
+        assert.deepEqual(BigInt(contractSwapBalance), BigInt(0));
+
+        Watcher = await contractSwap.watchTowers(watcher);
+        assert.deepEqual(BigInt(Watcher.deposit), BigInt(0));
+        assert.equal(Watcher.active, false);
+    });
+
     it('should initiate properly', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashedID = '0x74f758334ea8b733076264dc377bb1536607b0e169e0185c76114e249fa720c4'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        let swap = await contractSwap.swaps(hashed_secret);
+        let swap = await contractSwap.swaps(hashedID);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.refundTimestamp, 0);
-        assert.equal(swap.countdown, 0);
+        assert.equal(swap.watcherDeadline, 0);
         assert.equal(swap.value, 0);
         assert.equal(swap.payoff, 0);
-        assert.equal(swap.active, false);
         assert.equal(swap.state, 0);
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        swap = await contractSwap.swaps(hashed_secret);
+        let watcherDeadline = (await getCurrentTime()) + refundTime * 2 / 3;
+
+        swap = await contractSwap.swaps(hashedID);
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
         assert.equal(swap.hashedSecret, hashed_secret);
         assert.equal(swap.contractAddr, contractUSDC.address);
         assert.equal(swap.participant, participant);
         assert.equal(swap.initiator, sender);
+        assert.equal(swap.watcher, watcher);
         assert.deepEqual(BigInt(swap.refundTimestamp), BigInt(refundTimestamp));
-        assert.deepEqual(BigInt(swap.countdown), BigInt(countdown));
+        assert.deepEqual(BigInt(swap.watcherDeadline), BigInt(watcherDeadline));
         assert.deepEqual(BigInt(swap.value), BigInt(value - payoff));
         assert.equal(swap.payoff, payoff);
-        assert.equal(swap.active, active);
         assert.equal(swap.state, 1);
 
         assert.equal(contractBalance, value);
     });
-
-    it('should multiply initiate properly', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        swap = await contractSwap.swaps(hashed_secret);
-        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-
-        assert.equal(swap.hashedSecret, hashed_secret);
-        assert.equal(swap.contractAddr, contractUSDC.address);
-        assert.equal(swap.participant, participant);
-        assert.equal(swap.initiator, sender);
-        assert.deepEqual(BigInt(swap.refundTimestamp), BigInt(refundTimestamp));
-        assert.deepEqual(BigInt(swap.countdown), BigInt(countdown));
-        assert.deepEqual(BigInt(swap.value), BigInt(value1 + value2 - payoff));
-        assert.equal(swap.payoff, payoff);
-        assert.equal(swap.active, active);
-        assert.equal(swap.state, 1);
-
-        assert.deepEqual(BigInt(contractBalance), BigInt(value1 + value2));
-    });
-
+ 
     it('should not initiate if hashed_secret is already used', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+ 
         let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
+        let watcherForRedeem = true;
+        
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('swap for this hash is already initiated') >= 0);
+            assert(error.message.indexOf('swap for this ID is already initiated') >= 0);
+        }
+    });
+        
+    it('should not intitiate with wrong watcher', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[1];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+ 
+        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+
+        try {
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+                watcherForRedeem, value, payoff, {from: sender, value: 0});
+        }
+        catch (error) {
+            assert(error.message.indexOf('watcher does not exist') >= 0);
         }
     });
  
     it('should not intitiate with wrong refund timestamp', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[1];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+ 
         let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let refundTime = -1;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
         try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         }
         catch (error) {
             assert(error.message.indexOf('refundTimestamp has already come') >= 0);
@@ -186,357 +274,380 @@ contract('Atomex', async (accounts) => {
         refundTimestamp = 115792089237316195423570985008687907853269984665640564039457584007913129639936;
         
         try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('invalid number value') >= 0);
+            assert(error.message.indexOf('overflow') >= 0);
         }
     });
 
     it('should not intitiate with wrong payoff', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[1];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+ 
         let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 101;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
         try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('SafeMath: subtraction overflow') >= 0);
+            assert(error.message.indexOf('SafeMath sub wrong value') >= 0);
         }
 
         payoff = -1;
 
         try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('SafeMath: subtraction overflow') >= 0);
-        }
-    });
-
-    it('should not intitiate with wrong countdown', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 2000000000;
-        let value = 100;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value);
-
-        try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
-        }
-        catch (error) {
-            assert(error.message.indexOf('countdown exceeds the refundTimestamp') >= 0);
-        }
-
-        countdown = -1;
-
-        try {
-            await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
-        }
-        catch (error) {
-            assert(error.message.indexOf('countdown exceeds the refundTimestamp') >= 0);
-        }
-    });
-
-    it('should not add if swap is not initiated', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let sender = accounts[0];
-        let value = 100;
-
-        await contractUSDC.approve(contractSwap.address, value);
-
-        try {
-            await contractSwap.add(hashed_secret, value, {from: sender, value: 0});
-        }
-        catch (error) {
-            assert(error.message.indexOf('swap for this hash is empty or already spent') >= 0);
-        }
-    });
-
-    it('should not add after refundTime', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 30;
-        let value = 100;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
-
-        await sleep(~~(refundTime * 2));
-
-        try {
-            await contractSwap.add(hashed_secret, value, {from: sender, value: 0});
-        }
-        catch (error) {
-            assert(error.message.indexOf('refundTimestamp has already come') >= 0);
+            assert(error.message.indexOf('value out-of-bounds') >= 0);
         }
     });
 
     it('should redeem properly', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
-
-        let participantBalance = await contractUSDC.balanceOf(participant);
-        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let redeemerBalance = await contractUSDC.balanceOf(redeemer);
-
-        swap = await contractSwap.swaps(hashed_secret);
+        await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
+        
+        swap = await contractSwap.swaps(hashedID);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.refundTimestamp, 0);
-        assert.equal(swap.countdown, 0);
+        assert.equal(swap.watcherDeadline, 0);
         assert.equal(swap.value, 0);
         assert.equal(swap.payoff, 0);
-        assert.equal(swap.active, false);
         assert.equal(swap.state, 0);
-
-        assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(participantBalance), BigInt(value));
-        assert.equal(redeemerBalance, 0);
-    });
-
-    it('should redeem properly during the countdown', async () => {
-        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
-        let value = 100;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
-
-        await sleep(~~(refundTime - countdown + 1));
-
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
 
         let participantBalance = await contractUSDC.balanceOf(participant);
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let redeemerBalance = await contractUSDC.balanceOf(redeemer);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
 
         assert.equal(contractBalance, 0);
         assert.deepEqual(BigInt(participantBalance), BigInt(value - payoff));
-        assert.deepEqual(BigInt(redeemerBalance), BigInt(payoff));
-    });
-
-    it('should redeem properly after multiple init', async () => {
-        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-        
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        await sleep(~~(refundTime - countdown + 1));
-
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
-
-        let participantBalance = await contractUSDC.balanceOf(participant);
-        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let redeemerBalance = await contractUSDC.balanceOf(redeemer);
-
-        assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(participantBalance), BigInt(value1 + value2 - payoff));
-        assert.deepEqual(BigInt(redeemerBalance), BigInt(payoff));
+        assert.equal(watcherBalance, payoff);
     });
 
     it('should redeem properly with payoff = 0', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
         let payoff = 0;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-        
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        await sleep(~~(refundTime - countdown + 1));
-
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+        await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
 
         let participantBalance = await contractUSDC.balanceOf(participant);
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let redeemerBalance = await contractUSDC.balanceOf(redeemer);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
 
         assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(participantBalance), BigInt(value1 + value2));
-        assert.equal(redeemerBalance, 0);
+        assert.deepEqual(BigInt(participantBalance), BigInt(value));
+        assert.equal(watcherBalance, 0);
     });
+    
+    it('should redeem properly by participant address', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
 
-    it('should not redeem if not active', async () => {
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = false;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
-        }
-        catch (error) {
-            assert(error.message.indexOf('ap is not active') >= 0);
-        }
-    });
-
-    it('should redeem properly after activation', async () => {
-        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = false;
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-        
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        await contractSwap.activate(hashed_secret, {from: sender, value: 0});
-
-        await sleep(~~(refundTime - countdown + 1));
-
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+        await contractSwap.redeem(hashedID, secret, {from: participant, value: 0});
 
         let participantBalance = await contractUSDC.balanceOf(participant);
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let redeemerBalance = await contractUSDC.balanceOf(redeemer);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
 
         assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(participantBalance), BigInt(value1 + value2 - payoff));
-        assert.deepEqual(BigInt(redeemerBalance), BigInt(payoff));
+        assert.deepEqual(BigInt(participantBalance), BigInt(value));
     });
 
+    it('should redeem properly by any address', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await contractSwap.redeem(hashedID, secret, {from: accounts[4], value: 0});
+
+        let participantBalance = await contractUSDC.balanceOf(participant);
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(participantBalance), BigInt(value));
+    });
+
+    it('should redeem properly by watcher after Deadline', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime * 2 / 3 + 1));
+
+        await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
+
+        let participantBalance = await contractUSDC.balanceOf(participant);
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(participantBalance), BigInt(value - payoff));
+        assert.equal(watcherBalance, payoff);
+    });
+    
+    it('should redeem properly by another watcher', async () => {
+        let owner = await contractSwap.owner();
+        let watcher1 = accounts[3];
+        let watcher2 = accounts[4];
+        let deposit = 10;
+
+        await contractSwap.proposeWatcher(watcher1, {from: watcher1, value: deposit});
+        await contractSwap.activateWatcher(watcher1, {from: owner, value: 0});
+
+        await contractSwap.proposeWatcher(watcher2, {from: watcher2, value: deposit});
+        await contractSwap.activateWatcher(watcher2, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher1, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime * 2 / 3 + 1));
+
+        await contractSwap.redeem(hashedID, secret, {from: watcher2, value: 0});
+
+        let participantBalance = await contractUSDC.balanceOf(participant);
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let watcherBalance = await contractUSDC.balanceOf(watcher2);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(participantBalance), BigInt(value - payoff));
+        assert.equal(watcherBalance, payoff);
+    });
+    
+    it('should redeem properly by initiator after refundTimestamp', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime + 1));
+
+        let senderBalance = await contractUSDC.balanceOf(sender);
+
+        await contractSwap.redeem(hashedID, secret, {from: sender, value: 0});
+
+        let participantBalance = await contractUSDC.balanceOf(participant);
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let newSenderBalance = await contractUSDC.balanceOf(sender);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(participantBalance), BigInt(value - payoff));
+        assert.equal(BigInt(newSenderBalance), BigInt(senderBalance) + BigInt(payoff));
+    });
+    
     it('should not redeem twice', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+        await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
 
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: participant, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('swap for this hash is empty or already spent') >= 0);
+            assert(error.message.indexOf('swap for this ID is empty or already spent') >= 0);
         }
     });
 
     it('should not redeem after refundTime', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         await sleep(~~(refundTime + 1));
 
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
         }
         catch (error) {
             assert(error.message.indexOf('refundTimestamp has already come') >= 0);
@@ -544,251 +655,353 @@ contract('Atomex', async (accounts) => {
     });
 
     it('should not redeem with wrong secret', async () => {
-        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d84f';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111122';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
         }
         catch (error) {
             assert(error.message.indexOf('secret is not correct') >= 0);
         }
     });
-
+    
     it('should not redeem with wrong sized secret', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x111111111111111111111111111111111111111111111111111111111111111111';
-        let hashed_secret = '0x9e7156f17d23cd6df8abb2b239f739bfd206836d79a83937b4f852bcf206544f';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('invalid bytes32 value') >= 0);
+            assert(error.message.indexOf('incorrect data length') >= 0);
         }
 
         secret = '0x11111111111111111111111111111111111111111111111111111111111111';
         hashed_secret = '0xb71e60c29fedef4ba4dd4c7ec1357e34742f614dd64c14f070c009b36983c118';
+        hashedID = '0xeede062128f773d06d55b601e61a3c6088da6d6364bcbe057163fcf156410449' 
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
         }
         catch (error) {
             assert(error.message.indexOf('secret is not correct') >= 0);
         }
     });
+    
 
     it('should refund properly', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        let senderBalance = await contractUSDC.balanceOf(sender);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractUSDC.approve(contractSwap.address, value);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         await sleep(~~(refundTime + 1));
+
+        let senderBalance = await contractUSDC.balanceOf(sender);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
         
-        await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+        await contractSwap.refund(hashedID, {from: watcher, value: 0});
 
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let new_watcherBalance = await contractUSDC.balanceOf(watcher);
         let new_senderBalance = await contractUSDC.balanceOf(sender);
 
-        swap = await contractSwap.swaps(hashed_secret);
+        swap = await contractSwap.swaps(hashedID);
         assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
         assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
         assert.equal(swap.refundTimestamp, 0);
-        assert.equal(swap.countdown, 0);
+        assert.equal(swap.watcherDeadline, 0);
         assert.equal(swap.value, 0);
         assert.equal(swap.payoff, 0);
-        assert.equal(swap.active, false);
         assert.equal(swap.state, 0);
 
         assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance));
-    });
-
-    it('should refund properly after multiple init', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[1];
-        let countdown = 30;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = true;
-
-        let senderBalance = await contractUSDC.balanceOf(sender);
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-        
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        await sleep(~~(refundTime+1));
-
-        await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
-
-        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
-        let new_senderBalance = await contractUSDC.balanceOf(sender);
-
-        assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance));
+        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance) + BigInt(value) - BigInt(payoff));
+        assert.deepEqual(BigInt(new_watcherBalance), BigInt(watcherBalance) + BigInt(payoff));
     });
 
     it('should refund properly with payoff = 0', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[1];
-        let countdown = 30;
-        let value1 = 100;
-        let value2 = 200;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
         let payoff = 0;
-        let active = true;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime + 1));
 
         let senderBalance = await contractUSDC.balanceOf(sender);
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
         
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        await sleep(~~(refundTime+1));
-
-        await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+        await contractSwap.refund(hashedID, {from: watcher, value: 0});
 
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let new_watcherBalance = await contractUSDC.balanceOf(watcher);
         let new_senderBalance = await contractUSDC.balanceOf(sender);
 
         assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance));
+        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance) + BigInt(value));
+        assert.deepEqual(BigInt(new_watcherBalance), BigInt(watcherBalance));
     });
 
-    it('should refund properly if not active', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+    it('should refund properly after watcherDeadline', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = false;
+        let payoff = 0;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime * 3 / 2 + 1));
 
         let senderBalance = await contractUSDC.balanceOf(sender);
+        let watcherBalance = await contractUSDC.balanceOf(watcher);
+        
+        await contractSwap.refund(hashedID, {from: watcher, value: 0});
 
-        await contractUSDC.approve(contractSwap.address, value);
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let new_watcherBalance = await contractUSDC.balanceOf(watcher);
+        let new_senderBalance = await contractUSDC.balanceOf(sender);
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance) + BigInt(value) - BigInt(payoff));
+        assert.deepEqual(BigInt(new_watcherBalance), BigInt(watcherBalance) + BigInt(payoff));
+    });
 
-        await sleep(~~(refundTime+1));
+    it('should refund properly by sender', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
 
-        await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 0;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime + 1));
+
+        let senderBalance = await contractUSDC.balanceOf(sender);
+        
+        await contractSwap.refund(hashedID, {from: sender, value: 0});
 
         let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
         let new_senderBalance = await contractUSDC.balanceOf(sender);
 
         assert.equal(contractBalance, 0);
-        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance));
+        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance) + BigInt(value));
+    });
+
+    it('should refund properly by any address', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 0;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(refundTime + 1));
+
+        let senderBalance = await contractUSDC.balanceOf(sender);
+        
+        await contractSwap.refund(hashedID, {from: accounts[4], value: 0});
+
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let new_senderBalance = await contractUSDC.balanceOf(sender);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(new_senderBalance), BigInt(senderBalance) + BigInt(value));
     });
 
     it('should not refund twice', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = true;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         await sleep(~~(refundTime + 1));
         
-        await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
-
-        hashed_secret = '0x2222222222222222222222222222222222222222222222222222222222222222';
+        await contractSwap.refund(hashedID, {from: watcher, value: 0});
         
         try {
-            await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+            await contractSwap.refund(hashedID, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('swap for this hash is empty or already spent') >= 0);
+            assert(error.message.indexOf('swap for this ID is empty or already spent') >= 0);
         }
     });
-
+    
     it('should not refund before refundTime', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = true;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         try {
-            await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+            await contractSwap.refund(hashedID, {from: watcher, value: 0});
         }
         catch (error) {
             assert(error.message.indexOf('refundTimestamp has not come') >= 0);
@@ -796,79 +1009,224 @@ contract('Atomex', async (accounts) => {
     });
 
     it('should not refund if redeemed', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = true;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-        
-        await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+        await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
 
         await sleep(~~(refundTime+1));
 
         try {
-            await contractSwap.refund(hashed_secret, {from: sender, value: 0});
+            await contractSwap.refund(hashedID, {from: sender, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('swap for this hash is empty or already spent') >= 0);
+            assert(error.message.indexOf('swap for this ID is empty or already spent') >= 0);
         }
     });
 
     it('should not redeem if refunded', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = true;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
         
         await sleep(~~(refundTime+1));
 
-        await contractSwap.refund(hashed_secret, {from: sender, value: 0});
+        await contractSwap.refund(hashedID, {from: sender, value: 0});
         
         try {
-            await contractSwap.redeem(hashed_secret, secret, {from: participant, value: 0});
+            await contractSwap.redeem(hashedID, secret, {from: participant, value: 0});
         }
         catch (error) {
-            assert(error.message.indexOf('swap for this hash is empty or already spent') >= 0);
+            assert(error.message.indexOf('swap for this ID is empty or already spent') >= 0);
         }
     });
 
-    it('should emit Initiated event', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+    it('should release properly', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 10;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
         let payoff = 1;
-        let active = true;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        let releaseTimeout = refundTimestamp + 60*60*24*7
 
-        let res = await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(releaseTimeout + 1));
+
+        let ownerBalance = await contractUSDC.balanceOf(owner);
+        
+        await contractSwap.release(hashedID, {from: owner, value: 0});
+
+        let contractBalance = await contractUSDC.balanceOf(contractSwap.address);
+        let new_ownerBalance = await contractUSDC.balanceOf(owner);
+
+        swap = await contractSwap.swaps(hashedID);
+        assert.equal(swap.hashedSecret, '0x0000000000000000000000000000000000000000000000000000000000000000');
+        assert.equal(swap.contractAddr, '0x0000000000000000000000000000000000000000');
+        assert.equal(swap.participant, '0x0000000000000000000000000000000000000000');
+        assert.equal(swap.initiator, '0x0000000000000000000000000000000000000000');
+        assert.equal(swap.refundTimestamp, 0);
+        assert.equal(swap.watcherDeadline, 0);
+        assert.equal(swap.value, 0);
+        assert.equal(swap.payoff, 0);
+        assert.equal(swap.state, 0);
+
+        assert.equal(contractBalance, 0);
+        assert.deepEqual(BigInt(new_ownerBalance), BigInt(ownerBalance) + BigInt(value));
+    });    
+
+    it('should not release before releaseTimeout', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        let releaseTimeout = refundTimestamp + 60*60*24*7
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(releaseTimeout - 1));
+
+        try {
+            await contractSwap.release(hashedID, {from: owner, value: 0});
+        }
+        catch (error) {
+            assert(error.message.indexOf('releaseTimeout has not passed') >= 0);
+        }      
+    });    
+
+    it('should not release by any address except the owner', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = false;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 1;
+
+        let releaseTimeout = refundTimestamp + 60*60*24*7
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        await sleep(~~(releaseTimeout + 1));
+
+        try {
+            await contractSwap.release(hashedID, {from: accounts[4], value: 0});
+        }
+        catch (error) {
+            assert(error.message.indexOf('sender is not the owner') >= 0);
+        }   
+    });    
+
+    it('should emit Initiated event', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
+        let refundTime = 60;
+        let refundTimestamp = (await getCurrentTime()) + refundTime;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
+        let value = 100;
+        let payoff = 0;
+
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
+
+        let res = await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
+
+        let watcherDeadline = (await getCurrentTime()) + refundTime * 2 / 3;
 
         assert.equal(res.logs[0].event, "Initiated");
         assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
@@ -876,76 +1234,36 @@ contract('Atomex', async (accounts) => {
         assert.equal(res.logs[0].args._participant, participant);
         assert.equal(res.logs[0].args._initiator, sender);
         assert.deepEqual(BigInt(res.logs[0].args._refundTimestamp), BigInt(refundTimestamp));
-        assert.deepEqual(BigInt(res.logs[0].args._countdown), BigInt(countdown));
+        assert.deepEqual(BigInt(res.logs[0].args._watcherDeadline), BigInt(watcherDeadline));
         assert.deepEqual(BigInt(res.logs[0].args._value), BigInt(value - payoff));
         assert.deepEqual(BigInt(res.logs[0].args._payoff), BigInt(payoff));
-        assert.equal(res.logs[0].args._active, active);
-    });
-
-    it('should emit Added event', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = true;
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-
-        let res = await contractSwap.add(hashed_secret, value2, {from: sender, value: 0});
-
-        assert.equal(res.logs[0].event, "Added");
-        assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
-        assert.equal(res.logs[0].args._sender, sender);
-        assert.deepEqual(BigInt(res.logs[0].args._value), BigInt(value1 + value2 - payoff));
-    });
-
-    it('should emit Activated event', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
-        let refundTime = 60;
-        let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let countdown = 10;
-        let value1 = 100;
-        let value2 = 200;
-        let payoff = 1;
-        let active = false;
-
-        await contractUSDC.approve(contractSwap.address, value1 + value2);
-
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value1, payoff, active, {from: sender, value: 0});
-
-        let res = await contractSwap.activate(hashed_secret, {from: sender, value: 0});
-
-        assert.equal(res.logs[0].event, "Activated");
-        assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
     });
 
     it('should emit Redeemed event', async () => {
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
         let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
         let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let redeemer = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = true;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
-        let res = await contractSwap.redeem(hashed_secret, secret, {from: redeemer, value: 0});
+        let res = await contractSwap.redeem(hashedID, secret, {from: watcher, value: 0});
         
         assert.equal(res.logs[0].event, "Redeemed");
         assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
@@ -953,24 +1271,32 @@ contract('Atomex', async (accounts) => {
     });
 
     it('should emit Refunded event', async () => {
-        let hashed_secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let owner = await contractSwap.owner();
+        let watcher = accounts[3];
+        let deposit = 10;
+        
+        await contractSwap.proposeWatcher(watcher, {from: watcher, value: deposit});
+        await contractSwap.activateWatcher(watcher, {from: owner, value: 0});
+
+        let secret = '0x1111111111111111111111111111111111111111111111111111111111111111';
+        let hashed_secret = '0x59420d36b80353ed5a5822ca464cc9bffb8abe9cd63959651d3cd85a8252d83f';
+        let hashedID = '0x3a4db25d7f1534f741d6de027249e89db6c6d65df0e62f8311e4a21dd1f3c123'
         let refundTime = 60;
         let refundTimestamp = (await getCurrentTime()) + refundTime;
-        let sender = accounts[0];
-        let participant = accounts[1];
-        let refunder = accounts[2];
-        let countdown = 10;
+        let watcherForRedeem = true;
+        let sender = accounts[1];
+        let participant = accounts[2];
         let value = 100;
-        let payoff = 1;
-        let active = true;
+        let payoff = 0;
 
-        await contractUSDC.approve(contractSwap.address, value);
+        await contractUSDC.approve(contractSwap.address, value, {from: sender});
 
-        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, refundTimestamp, countdown, value, payoff, active, {from: sender, value: 0});
+        await contractSwap.initiate(hashed_secret, contractUSDC.address, participant, watcher, refundTimestamp, 
+            watcherForRedeem, value, payoff, {from: sender, value: 0});
 
         await sleep(~~(refundTime + 1));
         
-        let res = await contractSwap.refund(hashed_secret, {from: refunder, value: 0});
+        let res = await contractSwap.refund(hashedID, {from: watcher, value: 0});
         
         assert.equal(res.logs[0].event, "Refunded");
         assert.equal(res.logs[0].args._hashedSecret, hashed_secret);
